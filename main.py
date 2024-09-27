@@ -1,5 +1,6 @@
-import github
-import sys
+import requests
+import os
+import json
 from flask import Flask, request, abort
 
 app = Flask(__name__)
@@ -36,6 +37,7 @@ stats = {
     "reviews": 0,
     "stars": 0,
     "followers": 0,
+    "rank": "",
 }
 levels = {
     1: "S",
@@ -50,38 +52,68 @@ levels = {
 }
 
 
-def get_rank(username: str) -> str:
-    g = github.Github()
-    user = g.search_users(str(username) + " in:login")[0]
+def get_rank(username):
+    stats["rank"] = ""
+    query = f"""
+    {{
+        user(login: "{username}") {{
+            name
+            login
+            contributionsCollection {{
+                totalCommitContributions
+                totalPullRequestReviewContributions
+            }}
+            repositoriesContributedTo(first: 1, contributionTypes: [COMMIT, ISSUE, PULL_REQUEST, REPOSITORY]) {{
+                totalCount
+            }}
+            pullRequests(first: 1) {{
+                totalCount
+            }}
+            openIssues: issues(states: OPEN) {{
+                totalCount
+            }}
+            closedIssues: issues(states: CLOSED) {{
+                totalCount
+            }}
+            followers {{
+                totalCount
+            }}        
+            repositories(first: 100, ownerAffiliations: OWNER, orderBy: {{direction: DESC, field: STARGAZERS}}) {{
+                nodes {{
+                    name
+                stargazerCount
+                }}
+            }}
+              
+    }}
+    }}
+    """
+    headers = {
+        "Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}",
+        "Content-Type": "application/json",
+    }
+    response = requests.post(
+        "https://api.github.com/graphql", json={"query": query}, headers=headers
+    )
 
-    query = f"author:{user.login} is:public"
-    commits = g.search_commits(query)
-    for commit in commits:
-        if commit:
-            stats["commits"] += 1
-    medians["commits"] = 1000
+    if response.status_code != 200 or "errors" in response.text:
+        abort(403)
 
-    query = f"is:pr author:{user.login}"
-    prs = g.search_issues(query)
-    for pr in prs:
-        stats["prs"] += 1
+    data = response.json()["data"]["user"]
+    contributions = data["contributionsCollection"]
+    stats["commits"] = contributions["totalCommitContributions"]
+    stats["prs"] = data["pullRequests"]["totalCount"]
+    stats["issues"] = (
+        data["openIssues"]["totalCount"] + data["closedIssues"]["totalCount"]
+    )
+    stats["reviews"] = contributions["totalPullRequestReviewContributions"]
+    stats["followers"] = data["followers"]["totalCount"]
 
-    query = f"is:issue author:{user.login}"
-    issues = g.search_issues(query)
-    for issue in issues:
-        stats["issues"] += 1
+    repos = response.json()["data"]["user"]["repositories"]["nodes"]
 
-    query = f"is:pr reviewed-by:{user.login}"
-    reviews = g.search_issues(query)
-    for review in reviews:
-        stats["reviews"] += 1
-
-    query = f"is:repo owner:{user.login}"
-    repos = g.search_repositories(query)
+    stats["stars"] = 0
     for repo in repos:
-        stats["stars"] += repo.stargazers_count
-
-    stats["followers"] = user.followers
+        stats["stars"] += repo["stargazerCount"]
 
     total_weight = sum(weights.values())
     rank = (
@@ -98,17 +130,17 @@ def get_rank(username: str) -> str:
         / total_weight
     )
     lower_values = [x for x in levels.keys() if x >= rank * 100]
-    level = levels[min(lower_values)]
-    g.close()
-    return level
+    stats["rank"] = levels[min(lower_values)]
+
+    return stats
 
 
 @app.route("/")
 def index():
     username = request.args.get("user")
     if username:
-        result = get_rank(username)
-        return result
+        stats = get_rank(username)
+        return json.dumps(stats)
     else:
         abort(404)
 
