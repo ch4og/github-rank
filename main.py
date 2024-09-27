@@ -37,6 +37,7 @@ stats = {
     "reviews": 0,
     "stars": 0,
     "followers": 0,
+    "contributed_to": 0,
     "rank": "",
 }
 levels = {
@@ -108,6 +109,7 @@ def get_rank(username):
     )
     stats["reviews"] = contributions["totalPullRequestReviewContributions"]
     stats["followers"] = data["followers"]["totalCount"]
+    stats["contributed_to"] = data["repositoriesContributedTo"]["totalCount"]
 
     repos = response.json()["data"]["user"]["repositories"]["nodes"]
 
